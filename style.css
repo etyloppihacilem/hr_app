@@ -8,7 +8,6 @@ body {
     margin:10vw 5vw 0 5vw;
     background-color: #2b2b35;
     border-radius: 30px;
-    border: solid red 2px;
     height: 100vh;
     display: flex;
     flex-direction: column;
@@ -19,7 +18,7 @@ body {
     width:25vw;
     height:auto;
     margin: 2vw;
-    filter: drop-shadow(0px 0px 5px #ff005788);
+    /* filter: drop-shadow(0px 0px 5px #ff005788); */
 }
 
 .deactivated {
@@ -29,7 +28,7 @@ body {
 }
 
 .activated {
-    opacity: 80%;
+    opacity: 90%;
     transition-duration: 250ms;
     transition-timing-function: ease-in-out;
 }
@@ -40,30 +39,30 @@ body {
 
 @keyframes pulse {
     from {
-        opacity: 80%;
+        opacity: 90%;
         width: 25vw;
         margin: 2vw;
-        filter: drop-shadow(0px 0px 5px #ff005788);
+        filter: drop-shadow(0px 0px 0px #00000000);
     } 45% {
         opacity: 100%;
         width: 27vw;
         margin: 1vw;
         filter: drop-shadow(0px 0px 5px #ff0057);
     } 50% {
-        opacity: 80%;
+        opacity: 90%;
         width: 26vw;
         margin: 1.5vw;
-        filter: drop-shadow(0px 0px 5px #ff005744);
+        filter: drop-shadow(0px 0px 0px #00000000);
     } 55% {
         opacity: 100%;
         width: 27vw;
         margin: 1vw;
         filter: drop-shadow(0px 0px 5px #ff0057);
     } to {
-        opacity: 80%;
+        opacity: 90%;
         width: 25vw;
         margin: 2vw;
-        filter: drop-shadow(0px 0px 5px #ff005788);
+        filter: drop-shadow(0px 0px 0px #00000000);
     }
 }
 
