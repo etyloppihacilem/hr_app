@@ -10,6 +10,7 @@ project(my_project)
 pico_sdk_init()
 
 # rest of your project
+
 add_executable(picow_access_point_background
         picow_access_point.c
         dhcpserver/dhcpserver.c
@@ -18,7 +19,6 @@ add_executable(picow_access_point_background
 
 target_include_directories(picow_access_point_background PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts
         ${CMAKE_CURRENT_LIST_DIR}/dhcpserver
         ${CMAKE_CURRENT_LIST_DIR}/dnsserver
         )
