@@ -9,13 +9,25 @@
 # ##############################################################################
 
 import os, sys
+from css_html_js_minify import process_single_html_file, process_single_js_file, process_single_css_file, html_minify, js_minify, css_minify
+
+def minify(file, text):
+    if (file[-5:] == ".html"):
+        return html_minify(text)
+    elif (file[-3:] == ".js"):
+        return js_minify(text)
+    elif (file[-4:] == ".css"):
+        return css_minify(text)
+    return text
 
 def file_to_char(file):
     with open(file, 'r') as f:
         text = f.read()
+    text = minify(file, text)
     text = text.replace('\\', '\\\\')
     text = text.replace('"', '\\"')
     text = text.replace('\n', '\\n"\n"')
+    text = text.replace('%', '%%')
     return text
 
 if __name__ == '__main__':

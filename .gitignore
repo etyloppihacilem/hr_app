@@ -4,3 +4,4 @@ build/*
 pico
 pico-sdk
 "pico-sdk/*"
+venv_*
