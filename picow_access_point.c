@@ -9,11 +9,18 @@
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 
+#include "hardware/gpio.h"
+#include "hardware/irq.h"
+
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
 
 #include "dhcpserver.h"
 #include "dnsserver.h"
+
+// input hardware
+
+#define PULSE_IN 28
 
 #define TCP_PORT 80
 #define DEBUG_printf printf
@@ -186,7 +193,6 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                             HTTP_RESPONSE_HEADERS_CSS,
                             200,
                             con_state->result_len);
-
                 } else if (strncmp(request, SCRIPT_JS, sizeof(SCRIPT_JS) - 1) == 0) {
                     con_state->header_len = snprintf(con_state->headers,
                             sizeof(con_state->headers),
@@ -338,8 +344,30 @@ void                               key_pressed_func(void *param) {
     }
 }
 
+void                               pins_init() {
+    gpio_init(PULSE_IN);
+    gpio_set_dir(PULSE_IN, GPIO_IN);
+}
+
+void                               gpio_callback(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        // Le code à exécuter lors d'un front montant
+        DEBUG_printf("Front montant détecté sur le GPIO %d\n", gpio);
+    }
+}
+
+void                               hr_measure(TCP_SERVER_T *state) {
+    DEBUG_printf("Ready to measure heart rate !\n");
+    gpio_set_irq_enabled_with_callback(PULSE_IN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+    irq_set_enabled(IO_IRQ_BANK0, true);
+    while (!state->complete) {
+        tight_loop_contents();
+    }
+}
+
 int                                main() {
     stdio_init_all();                // init stdio with uart and stuff
+    pins_init();
 
     TCP_SERVER_T  *state    = calloc(1, sizeof(TCP_SERVER_T));
     if (!state) {
@@ -377,9 +405,8 @@ int                                main() {
         return (1);
     }
     state->complete = false;
-    while (!state->complete) {
-        sleep_ms(1000);                                // things to do here
-    }
+    hr_measure(state);
+
     tcp_server_close(state);
     dns_server_deinit(&dns_server);
     dhcp_server_deinit(&dhcp_server);
