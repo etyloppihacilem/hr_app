@@ -42,6 +42,8 @@
         "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: text/javascript; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define HTTP_RESPONSE_HEADERS_CSS \
         "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: text/css; charset=utf-8\r\nConnection: close\r\n\r\n"
+#define HTTP_RESPONSE_HEADERS_DATA \
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define LED_TEST_BODY \
         "<html><body><h1>Hello from Pico W.</h1><p>Led is %s</p><p><a href=\"?led=%d\">Turn led %s</a></body></html>"
 #define LED_PARAM "led=%d"
@@ -49,6 +51,7 @@
 #define INDEX_HTML "/hr_app.html"
 #define SCRIPT_JS "/script.js"
 #define STYLE_CSS "/style.css"
+#define DATA "/data"
 #include "script.js.h"
 #include "style.css.h"
 #include "index.html.h"
@@ -94,6 +97,7 @@ t_pulse *pulse_add(t_pulse **l, uint64_t ts) {
     t_pulse *ret = calloc(1, sizeof(t_pulse));
     if (!ret)
         return (0);
+    ret->timestamp = ts;
     ret->prev = *l;
     if (*l)
         (*l)->next = *l;
@@ -154,10 +158,57 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return (ERR_OK);
 }
 
-/* static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
+static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
     int len = 0;
 
-    if (strncmp(request, INDEX_HTML, sizeof(INDEX_HTML) - 1) == 0) {
+    if (strncmp(request, DATA, sizeof(DATA) - 1) == 0) {
+        int32_t  i;
+        char     *para;
+        uint64_t last;
+        char     a[KEY_MAX_LEN];
+        t_pulse  *start;
+        para = ft_strchr(params, '=');
+        if (!para)
+            last = 0;
+        else
+            last = strtoull(para + 1, NULL, 10);
+        DEBUG_printf("last: %" PRIu64 "\n", last);
+        i = 0;
+        bzero(result, max_result_len);
+        while (!mutex_enter_timeout_ms(&local_storage.mtx, 1000) && i++ < RETRIES)
+            ;
+        if (i >= RETRIES) {
+            DEBUG_printf("MUTEX BLOCKED : aborting read\n");
+            len = snprintf(result, max_result_len, "{'error':'mutex'}");
+        } else {
+            DEBUG_printf("a\n");
+            start = local_storage.data;
+            if (!start || start->timestamp <= last) {
+                if (start)
+                    DEBUG_printf("local storage : %"PRIu64"\n", start->timestamp);
+                else
+                    DEBUG_printf("local storage empty : %p\n", start);
+                mutex_exit(&local_storage.mtx);
+                len = snprintf(result, max_result_len, "[]");
+            } else {
+                DEBUG_printf("b\n");
+                ft_strlcat(result, "[", max_result_len);
+                len++;
+                while (start && start->timestamp > last && len < max_result_len) {
+                    if (start->prev && start->prev->timestamp > last)
+                        len += snprintf(a, KEY_MAX_LEN, "%" PRIu64 ",", start->timestamp);
+                    else
+                        len += snprintf(a, KEY_MAX_LEN, "%" PRIu64, start->timestamp);
+                    ft_strlcat(result, a, max_result_len);
+                    start = start->prev;
+                }
+                mutex_exit(&local_storage.mtx);
+                DEBUG_printf("c\n");
+                ft_strlcat(result, "]", max_result_len);
+                len++;
+            }
+        }
+    } else if (strncmp(request, INDEX_HTML, sizeof(INDEX_HTML) - 1) == 0) {
         len = snprintf(result, max_result_len, index_html_h);
     } else if (strncmp(request, STYLE_CSS, sizeof(STYLE_CSS) - 1) == 0) {
         len = snprintf(result, max_result_len, style_css_h);
@@ -189,7 +240,7 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
         }
     }
     return (len);
-} */
+}
 
 char *extract_header(char *header, char *value, char *ret, uint32_t ret_size) {
     uint32_t size;
@@ -278,33 +329,41 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                 }
             }
             // Generate content
-            // con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
+            con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
             // DEBUG_printf("Request: %s?%s\n", request, params);
             // DEBUG_printf("Result: %d\n", con_state->result_len);
             // Check we had enough buffer space
+            int16_t ret_code = 200;
             if (con_state->result_len > sizeof(con_state->result) - 1) {
                 DEBUG_printf("Too much result data %d\n", con_state->result_len);
-                return (tcp_close_client_connection(con_state, pcb, ERR_CLSD));
+                ret_code = 507;
+                // return (tcp_close_client_connection(con_state, pcb, ERR_CLSD));
             }
             // Generate web page
             if (con_state->result_len > 0) {
-                if (strncmp(request, STYLE_CSS, sizeof(STYLE_CSS) - 1) == 0) {
+                if (strncmp(request, DATA, sizeof(DATA) - 1) == 0) {
+                    con_state->header_len = snprintf(con_state->headers,
+                            sizeof(con_state->headers),
+                            HTTP_RESPONSE_HEADERS_DATA,
+                            ret_code,
+                            con_state->result_len);
+                } else if (strncmp(request, STYLE_CSS, sizeof(STYLE_CSS) - 1) == 0) {
                     con_state->header_len = snprintf(con_state->headers,
                             sizeof(con_state->headers),
                             HTTP_RESPONSE_HEADERS_CSS,
-                            200,
+                            ret_code,
                             con_state->result_len);
                 } else if (strncmp(request, SCRIPT_JS, sizeof(SCRIPT_JS) - 1) == 0) {
                     con_state->header_len = snprintf(con_state->headers,
                             sizeof(con_state->headers),
                             HTTP_RESPONSE_HEADERS_JS,
-                            200,
+                            ret_code,
                             con_state->result_len);
                 } else {
                     con_state->header_len = snprintf(con_state->headers,
                             sizeof(con_state->headers),
                             HTTP_RESPONSE_HEADERS,
-                            200,
+                            ret_code,
                             con_state->result_len);
                 }
                 if (con_state->header_len > sizeof(con_state->headers) - 1) {
@@ -470,6 +529,7 @@ void hr_measure(TCP_SERVER_T *state) {
     int32_t i;
     t_pulse *a;
     t_pulse *b;
+
     DEBUG_printf("Ready to measure heart rate !\n");
     gpio_set_irq_enabled_with_callback(PULSE_IN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     // irq_set_enabled(IO_IRQ_BANK0, true);
@@ -492,7 +552,7 @@ void hr_measure(TCP_SERVER_T *state) {
         while (b && ++i < MAX_STORAGE)
             b = b->prev;
         if (b) {
-            b = a->prev;
+            b       = a->prev;
             a->prev = NULL;
         }
         mutex_exit(&local_storage.mtx);
