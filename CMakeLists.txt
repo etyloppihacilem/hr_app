@@ -29,6 +29,7 @@ target_include_directories(picow_access_point_background PRIVATE
 target_link_libraries(picow_access_point_background
         pico_cyw43_arch_lwip_threadsafe_background
         pico_stdlib
+        pico_multicore
         )
 
 pico_add_extra_outputs(picow_access_point_background)

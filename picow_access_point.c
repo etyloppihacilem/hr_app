@@ -9,6 +9,8 @@
 
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "pico/lock_core.h"
 
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
@@ -25,6 +27,10 @@
 
 // GPIO
 #define PULSE_IN 28
+
+#define RETRIES 10
+#define MAX_STORAGE 1024
+#define REG_STORAGE 900
 
 #define TCP_PORT 80
 #define DEBUG_printf printf
@@ -75,6 +81,13 @@ typedef struct s_pulse {
     struct s_pulse *next;
 } t_pulse;
 
+typedef struct s_storage {
+    mutex_t mtx;
+    t_pulse *data;
+} t_storage;
+
+t_storage local_storage;
+
 t_pulse *pulse_add(t_pulse **l, uint64_t ts) {
     if (!l)
         return (0);
@@ -86,6 +99,18 @@ t_pulse *pulse_add(t_pulse **l, uint64_t ts) {
         (*l)->next = *l;
     *l = ret;
     return (ret);
+}
+
+void pulse_clean(t_pulse **l) {
+    t_pulse *i;
+
+    if (!l)
+        return;
+    while (*l) {
+        i = (*l)->prev;
+        free(*l);
+        *l = i;
+    }
 }
 
 static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
@@ -429,24 +454,58 @@ void gpio_callback(uint gpio, uint32_t events) {
         // Le code à exécuter lors d'un front montant
         uint64_t pulse_time = to_us_since_boot(get_absolute_time());
         DEBUG_printf("Front montant détecté sur le GPIO %d à %" PRIu64 "\n", gpio, pulse_time);
+        int16_t i = 0;
+        while (!mutex_enter_timeout_ms(&local_storage.mtx, 1000) && i++ < RETRIES)
+            ;
+        if (i >= RETRIES) {
+            DEBUG_printf("MUTEX BLOCKED : aborting write\n");
+            return;
+        }
+        pulse_add(&local_storage.data, pulse_time);
+        mutex_exit(&local_storage.mtx);
     }
 }
 
 void hr_measure(TCP_SERVER_T *state) {
+    int32_t i;
+    t_pulse *a;
+    t_pulse *b;
     DEBUG_printf("Ready to measure heart rate !\n");
     gpio_set_irq_enabled_with_callback(PULSE_IN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     // irq_set_enabled(IO_IRQ_BANK0, true);
     while (!state->complete) {
         tight_loop_contents();
+        sleep_ms(60000);
         DEBUG_printf("ping\n");
-        sleep_ms(5000);
+        i = 0;
+        while (!mutex_enter_timeout_ms(&local_storage.mtx, 1000) && i++ < RETRIES)
+            ;
+        if (i >= RETRIES) {
+            DEBUG_printf("MUTEX BLOCKED : aborting write\n");
+            continue;
+        }
+        i = 0;
+        a = local_storage.data;
+        while (a && ++i < REG_STORAGE)
+            a = a->prev;
+        b = a;
+        while (b && ++i < MAX_STORAGE)
+            b = b->prev;
+        if (b) {
+            b = a->prev;
+            a->prev = NULL;
+        }
+        mutex_exit(&local_storage.mtx);
+        if (b)
+            DEBUG_printf("Cleaning storage...\n");
+        pulse_clean(&b);
     }
 }
 
 int main() {
     stdio_init_all();                // init stdio with uart and stuff
     pins_init();
-
+    mutex_init(&local_storage.mtx);
     TCP_SERVER_T *state = calloc(1, sizeof(TCP_SERVER_T));
     if (!state) {
         DEBUG_printf("failed to allocate state\n");
