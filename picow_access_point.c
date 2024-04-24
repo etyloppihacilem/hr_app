@@ -51,7 +51,7 @@
 #define INDEX_HTML "/hr_app.html"
 #define SCRIPT_JS "/script.js"
 #define STYLE_CSS "/style.css"
-#define DATA "/data"
+#define DATA "/data.json"
 #include "script.js.h"
 #include "style.css.h"
 #include "index.html.h"
@@ -149,10 +149,10 @@ static void tcp_server_close(TCP_SERVER_T *state) {
 static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T *) arg;
 
-    DEBUG_printf("tcp_server_sent %u\n", len);
+    // DEBUG_printf("tcp_server_sent %u\n", len);
     con_state->sent_len += len;
     if (con_state->sent_len >= con_state->header_len + con_state->result_len) {
-        DEBUG_printf("all done\n");
+        // DEBUG_printf("all done\n");
         return (tcp_close_client_connection(con_state, pcb, ERR_OK));
     }
     return (ERR_OK);
@@ -172,7 +172,7 @@ static int test_server_content(const char *request, const char *params, char *re
             last = 0;
         else
             last = strtoull(para + 1, NULL, 10);
-        DEBUG_printf("last: %" PRIu64 "\n", last);
+        // DEBUG_printf("last: %" PRIu64 "\n", last);
         i = 0;
         bzero(result, max_result_len);
         while (!mutex_enter_timeout_ms(&local_storage.mtx, 1000) && i++ < RETRIES)
@@ -181,17 +181,11 @@ static int test_server_content(const char *request, const char *params, char *re
             DEBUG_printf("MUTEX BLOCKED : aborting read\n");
             len = snprintf(result, max_result_len, "{'error':'mutex'}");
         } else {
-            DEBUG_printf("a\n");
             start = local_storage.data;
             if (!start || start->timestamp <= last) {
-                if (start)
-                    DEBUG_printf("local storage : %"PRIu64"\n", start->timestamp);
-                else
-                    DEBUG_printf("local storage empty : %p\n", start);
                 mutex_exit(&local_storage.mtx);
                 len = snprintf(result, max_result_len, "[]");
             } else {
-                DEBUG_printf("b\n");
                 ft_strlcat(result, "[", max_result_len);
                 len++;
                 while (start && start->timestamp > last && len < max_result_len) {
@@ -203,7 +197,6 @@ static int test_server_content(const char *request, const char *params, char *re
                     start = start->prev;
                 }
                 mutex_exit(&local_storage.mtx);
-                DEBUG_printf("c\n");
                 ft_strlcat(result, "]", max_result_len);
                 len++;
             }
