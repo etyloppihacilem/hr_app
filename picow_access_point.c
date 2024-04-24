@@ -28,7 +28,7 @@
 #define HR_END_HEADERS \
         "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: application/json; charset=utf-8\nConnection: close\n\n"
 #define HR_DATA \
-        "{type:\"%s\",timestamp:%uld}"
+        "{type:\"%s\",timestamp:%"PRIu64"}"
 #define HR_CON_OK \
         "CONNECTED"
 
@@ -471,7 +471,6 @@ static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
             DEBUG_printf("Message sent successfully.\n");
         }
     }
-    DEBUG_printf("Hr server error packet too long ??\n");
     return (ERR_OK);
 }
 
@@ -696,7 +695,7 @@ void gpio_callback(uint gpio, uint32_t events) {
         // Le code à exécuter lors d'un front montant
         uint64_t pulse_time = to_us_since_boot(get_absolute_time());
         HR_SERVER_T *server = (HR_SERVER_T *) g_hr_server;
-        DEBUG_printf("Front montant détecté sur le GPIO %d à %uld\n", gpio, pulse_time);
+        DEBUG_printf("Front montant détecté sur le GPIO %d à %" PRIu64 "\n", gpio, pulse_time);
         if (!server)
             return;
         char result[RESULT_MAX_LEN];
@@ -707,7 +706,7 @@ void gpio_callback(uint gpio, uint32_t events) {
             hr_server_push(i->con, result);
             i = i->next;
         }
-        DEBUG_printf("Front montant diffusé.");
+        DEBUG_printf("Front montant diffusé.\n");
     }
 }
 
@@ -718,8 +717,8 @@ void hr_measure(HR_SERVER_T *state) {
     // irq_set_enabled(IO_IRQ_BANK0, true);
     while (!state->complete) {
         tight_loop_contents();
-        DEBUG_printf("test\n");
-        sleep_ms(500);
+        // DEBUG_printf("test\n");
+        sleep_ms(1000);
     }
 }
 

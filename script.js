@@ -13,3 +13,5 @@ activate.addEventListener("click", function() {
     heart.classList.toggle('activated');
 });
 
+var hr_socket = new WebSocket("ws://anything:44242/");
+console.log(hr_socket);

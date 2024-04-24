@@ -29,15 +29,21 @@ GO_UP		= \033[1A\r
 ###################
 
 PICO_BOARD=pico_w
+WEB_SRCS = index.html script.js style.css
+PYTHON=./venv_hr_app/bin/python3
 
 ########################
 ##  AUTO-EDIT ON VAR  ##
 ########################
 
 DEBUG=${if ${filter ${MAKECMDGOALS}, debug}, -DCMAKE_BUILD_TYPE=Debug, }
+WEB_HEADERS=${patsubst %,%.h,$(WEB_SRCS)}
 
-all: build
+all: build ${WEB_HEADERS}
 	cd build && cmake .. -DPICO_BOARD=${PICO_BOARD} ${DEBUG} && make -j4
+
+${WEB_HEADERS}&:${WEB_SRCS}
+	${PYTHON} ./file_to_char.py ${WEB_SRCS}
 
 push:
 	cd build && openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg -c "adapter speed 5000" -c "program picow_access_point_background.elf verify reset"
