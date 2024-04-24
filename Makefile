@@ -32,6 +32,10 @@ PICO_BOARD=pico_w
 WEB_SRCS = index.html script.js style.css
 PYTHON=./venv_hr_app/bin/python3
 
+LIBFT_DIR		= ./libft
+LIBFT			= ${SRCS_DIR}/libft/libft.a
+LIBFT_TARGET	= $(if $(filter debug,$(MAKECMDGOALS)),debug,all)
+
 ########################
 ##  AUTO-EDIT ON VAR  ##
 ########################
@@ -41,6 +45,11 @@ WEB_HEADERS=${patsubst %,%.h,$(WEB_SRCS)}
 
 all: build ${WEB_HEADERS}
 	cd build && cmake .. -DPICO_BOARD=${PICO_BOARD} ${DEBUG} && make -j4
+
+${LIBFT}: force
+	@${MAKE} -C ${LIBFT_DIR} ${LIBFT_TARGET}
+
+force:;
 
 ${WEB_HEADERS}&:${WEB_SRCS}
 	${PYTHON} ./file_to_char.py ${WEB_SRCS}

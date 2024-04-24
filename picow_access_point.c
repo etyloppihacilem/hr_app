@@ -19,6 +19,8 @@
 #include "dhcpserver.h"
 #include "dnsserver.h"
 
+#include "libft/libft.h"
+
 // input hardware
 
 #define PULSE_IN 28
@@ -28,7 +30,7 @@
 #define HR_END_HEADERS \
         "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: application/json; charset=utf-8\nConnection: close\n\n"
 #define HR_DATA \
-        "{type:\"%s\",timestamp:%"PRIu64"}"
+        "{type:\"%s\",timestamp:%" PRIu64 "}"
 #define HR_CON_OK \
         "CONNECTED"
 
@@ -237,6 +239,20 @@ static int test_server_content(const char *request, const char *params, char *re
     return (len);
 }
 
+char *extract_host(char *header) {
+    char *h = strstr(header, "Host:");
+    char *b;
+    if (!h)
+        return (NULL);
+    h += 5;
+    while (*h && ft_isspace(*h))
+        h++;
+    b = h;
+    while (*b && *b != '\r' && *b != '\n')
+        b++;
+    return (ft_substr(h, 0, b - h));
+}
+
 /*
  * Processing of ingoing requests
  * */
@@ -249,7 +265,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     }
     assert(con_state && con_state->pcb == pcb);
     if (p->tot_len > 0) {
-        DEBUG_printf("tcp_server_recv %d err %d\n", p->tot_len, err);
+        // DEBUG_printf("tcp_server_recv %d err %d\n", p->tot_len, err);
         // for (struct pbuf *q = p; q != NULL; q = q->next) {
         //     DEBUG_printf("in: %.*s\n", q->len, q->payload);
         // }
@@ -260,8 +276,31 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                 0);
         // Handle GET request
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
+            char *host    = extract_host(con_state->headers);
+            // DEBUG_printf("HOST : '%s'\n", host);
             char *request = con_state->headers + sizeof(HTTP_GET); // + space
             char *params  = strchr(request, '?');
+            if (strncmp(host, ipaddr_ntoa(con_state->gw), strlen(host))) {
+                if (strncmp(host, "hr_app.com", strlen(host)) == 0) {
+                    con_state->header_len = snprintf(con_state->headers,
+                            sizeof(con_state->headers),
+                            HTTP_RESPONSE_REDIRECT,
+                            ipaddr_ntoa(con_state->gw));
+                    DEBUG_printf("Sending redirect %s", con_state->headers);
+                    con_state->sent_len = 0;
+                    err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
+                    if (err != ERR_OK) {
+                        DEBUG_printf("failed to write header data %d\n", err);
+                        return (tcp_close_client_connection(con_state, pcb, err));
+                    }
+                    tcp_recved(pcb, p->tot_len);
+                    pbuf_free(p);
+                    tcp_close_client_connection(con_state, pcb, ERR_CLSD);
+                    return (ERR_OK);
+                }
+                pbuf_free(p);
+                return (ERR_OK);
+            }
             if (params) {
                 if (*params) {
                     char *space = strchr(request, ' ');
@@ -340,7 +379,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 static err_t tcp_server_poll(void *arg, struct tcp_pcb *pcb) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T *) arg;
 
-    DEBUG_printf("tcp_server_poll_fn\n");
+    // DEBUG_printf("tcp_server_poll_fn\n");
     return (tcp_close_client_connection(con_state, pcb, ERR_OK)); // Just disconnect clent?
 }
 
@@ -364,7 +403,7 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
         DEBUG_printf("failure in accept\n");
         return (ERR_VAL);
     }
-    DEBUG_printf("client connected\n");
+    // DEBUG_printf("tcp client connected\n");
 
     // Create the state for the connection
     TCP_CONNECT_STATE_T *con_state = calloc(1, sizeof(TCP_CONNECT_STATE_T));
@@ -688,13 +727,13 @@ void pins_init() {
 void *g_hr_server = NULL;
 
 void gpio_callback(uint gpio, uint32_t events) {
-    HR_SERVER_T *server = NULL;
-    t_hr_con_list      *i      = NULL;
+    HR_SERVER_T   *server = NULL;
+    t_hr_con_list *i      = NULL;
 
     if (events & GPIO_IRQ_EDGE_RISE) {
         // Le code à exécuter lors d'un front montant
-        uint64_t pulse_time = to_us_since_boot(get_absolute_time());
-        HR_SERVER_T *server = (HR_SERVER_T *) g_hr_server;
+        uint64_t    pulse_time = to_us_since_boot(get_absolute_time());
+        HR_SERVER_T *server    = (HR_SERVER_T *) g_hr_server;
         DEBUG_printf("Front montant détecté sur le GPIO %d à %" PRIu64 "\n", gpio, pulse_time);
         if (!server)
             return;
@@ -703,10 +742,10 @@ void gpio_callback(uint gpio, uint32_t events) {
         snprintf(result, sizeof(result), HR_DATA, "PULSE", pulse_time);
         i = server->con_list;
         while (i) {
-            hr_server_push(i->con, result);
+            DEBUG_printf("%d ", hr_server_push(i->con, result));
             i = i->next;
         }
-        DEBUG_printf("Front montant diffusé.\n");
+        DEBUG_printf("\nFront montant diffusé.\n");
     }
 }
 
@@ -770,7 +809,7 @@ int main() {
         DEBUG_printf("failed to open hr_server\n");
         return (1);
     }
-    state->complete = false;
+    state->complete    = false;
     hr_state->complete = false;
     hr_measure(hr_state);
 

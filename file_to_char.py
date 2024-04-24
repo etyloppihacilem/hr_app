@@ -14,8 +14,8 @@ from css_html_js_minify import process_single_html_file, process_single_js_file,
 def minify(file, text):
     if (file[-5:] == ".html"):
         return html_minify(text)
-    elif (file[-3:] == ".js"):
-        return js_minify(text)
+    # elif (file[-3:] == ".js"):
+    #     return js_minify(text)
     elif (file[-4:] == ".css"):
         return css_minify(text)
     return text
@@ -26,6 +26,7 @@ def file_to_char(file):
     text = minify(file, text)
     text = text.replace('\\', '\\\\')
     text = text.replace('"', '\\"')
+    # text = text.replace('`', '\\`')
     text = text.replace('\n', '\\n"\n"')
     text = text.replace('%', '%%')
     return text
