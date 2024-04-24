@@ -13,7 +13,7 @@ activate.addEventListener("click", function() {
     heart.classList.toggle('activated');
 });
 
-var hr_socket = new WebSocket("ws://anything:44242/");
+var hr_socket = new WebSocket("ws://anything:9000/");
 
 hr_socket.onopen = function(e) {
   console.log("[open] Connection established");

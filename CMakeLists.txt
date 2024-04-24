@@ -17,6 +17,10 @@ add_executable(picow_access_point_background
         picow_access_point.c
         dhcpserver/dhcpserver.c
         dnsserver/dnsserver.c
+        sha1/sha1.c
+        base64/buffer.c
+        base64/decode.c
+        base64/encode.c
         )
 
 target_include_directories(picow_access_point_background PRIVATE
@@ -24,6 +28,8 @@ target_include_directories(picow_access_point_background PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/dhcpserver
         ${CMAKE_CURRENT_LIST_DIR}/dnsserver
         ${CMAKE_CURRENT_LIST_DIR}/libft
+        ${CMAKE_CURRENT_LIST_DIR}/sha1
+        ${CMAKE_CURRENT_LIST_DIR}/base64
         )
 
 target_link_libraries(picow_access_point_background

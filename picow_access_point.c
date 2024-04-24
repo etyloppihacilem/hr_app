@@ -20,30 +20,38 @@
 #include "dnsserver.h"
 
 #include "libft/libft.h"
+#include "sha1/sha1.h"
+#include "base64/b64.h"
 
 // input hardware
 
 #define PULSE_IN 28
-#define HR_PORT 44242
+#define HR_PORT 9000
 #define HR_PULSE_HEADERS \
-        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: application/json; charset=utf-8\nConnection: keep-alive\n\n"
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: application/json; charset=utf-8\r\nConnection: keep-alive\r\n\r\n"
+#define HR_HEADER_HANDSHAKE \
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: application/json; charset=utf-8\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n"
+#define HR_HEADER_400 \
+        "HTTP/1.1 400 Bad request\r\nContent-Length: %d\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define HR_END_HEADERS \
-        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: application/json; charset=utf-8\nConnection: close\n\n"
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define HR_DATA \
         "{type:\"%s\",timestamp:%" PRIu64 "}"
 #define HR_CON_OK \
         "CONNECTED"
+
+#define WS_MAGIC_STRING "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 #define TCP_PORT 80
 #define DEBUG_printf printf
 #define POLL_TIME_S 5
 #define HTTP_GET "GET"
 #define HTTP_RESPONSE_HEADERS \
-        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: text/html; charset=utf-8\nConnection: close\n\n"
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define HTTP_RESPONSE_HEADERS_JS \
-        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: text/javascript; charset=utf-8\nConnection: close\n\n"
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: text/javascript; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define HTTP_RESPONSE_HEADERS_CSS \
-        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: text/css; charset=utf-8\nConnection: close\n\n"
+        "HTTP/1.1 %d OK\r\nContent-Length: %d\r\nContent-Type: text/css; charset=utf-8\r\nConnection: close\r\n\r\n"
 #define LED_TEST_BODY \
         "<html><body><h1>Hello from Pico W.</h1><p>Led is %s</p><p><a href=\"?led=%d\">Turn led %s</a></body></html>"
 #define LED_PARAM "led=%d"
@@ -55,7 +63,7 @@
 #include "style.css.h"
 #include "index.html.h"
 #define LED_GPIO 0
-#define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s" INDEX_HTML "\n\n"
+#define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\r\nLocation: http://%s" INDEX_HTML "\r\n\r\n"
 #define RESULT_MAX_LEN 2048
 
 typedef struct TCP_SERVER_T_ {
@@ -77,6 +85,7 @@ typedef struct TCP_CONNECT_STATE_T_ {
 
 typedef struct s_hr_con_list {
     struct HR_CONNECT_STATE_T_ *con;
+    char                       client_key[128];
     struct s_hr_con_list       *next;
 } t_hr_con_list;
 
@@ -239,17 +248,25 @@ static int test_server_content(const char *request, const char *params, char *re
     return (len);
 }
 
-char *extract_host(char *header) {
-    char *h = strstr(header, "Host:");
+char *extract_header(char *header, char *value, char *ret, uint32_t ret_size) {
+    uint32_t size;
+
+    size = strlen(value);
+    char *h = strnstr(header, value, strlen(header));
     char *b;
     if (!h)
         return (NULL);
-    h += 5;
+    h += size;
     while (*h && ft_isspace(*h))
         h++;
     b = h;
     while (*b && *b != '\r' && *b != '\n')
         b++;
+    if (ret) {
+        ft_strlcpy(ret, h, ret_size);
+        bzero(ret + (b - h), ret_size - (b - h) - 1);
+        return (ret);
+    }
     return (ft_substr(h, 0, b - h));
 }
 
@@ -260,15 +277,15 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T *) arg;
 
     if (!p) {
-        DEBUG_printf("connection closed\n");
+        DEBUG_printf("connection closed because no p\n");
         return (tcp_close_client_connection(con_state, pcb, ERR_OK));
     }
     assert(con_state && con_state->pcb == pcb);
     if (p->tot_len > 0) {
-        // DEBUG_printf("tcp_server_recv %d err %d\n", p->tot_len, err);
-        // for (struct pbuf *q = p; q != NULL; q = q->next) {
-        //     DEBUG_printf("in: %.*s\n", q->len, q->payload);
-        // }
+        /* DEBUG_printf("tcp_server_recv %d err %d\n", p->tot_len, err);
+        for (struct pbuf *q = p; q != NULL; q = q->next) {
+            DEBUG_printf("in: %.*s\n", q->len, q->payload);
+        } */
         // Copy the request into the buffer
         pbuf_copy_partial(p,
                 con_state->headers,
@@ -276,7 +293,8 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                 0);
         // Handle GET request
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
-            char *host    = extract_host(con_state->headers);
+            char host[128];
+            extract_header(con_state->headers, "Host:", host, 128);
             // DEBUG_printf("HOST : '%s'\n", host);
             char *request = con_state->headers + sizeof(HTTP_GET); // + space
             char *params  = strchr(request, '?');
@@ -314,8 +332,8 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
             }
             // Generate content
             con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
-            DEBUG_printf("Request: %s?%s\n", request, params);
-            DEBUG_printf("Result: %d\n", con_state->result_len);
+            // DEBUG_printf("Request: %s?%s\n", request, params);
+            // DEBUG_printf("Result: %d\n", con_state->result_len);
             // Check we had enough buffer space
             if (con_state->result_len > sizeof(con_state->result) - 1) {
                 DEBUG_printf("Too much result data %d\n", con_state->result_len);
@@ -513,8 +531,28 @@ static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return (ERR_OK);
 }
 
+int generate_handshake(char *client_key, char *server_key) {
+    char tmp[128];
+
+    return (0);
+    bzero(tmp, 128);
+    bzero(server_key, 128);
+    ft_strlcpy(tmp, client_key, 128);
+    ft_strlcat(tmp, WS_MAGIC_STRING, 128);
+    SHA1(server_key, tmp, strlen(tmp));
+    char *a = b64_encode(server_key, strlen(server_key));
+    if (!a)
+        return (-1);
+    DEBUG_printf("server key : %s\n", a);
+    ft_strlcpy(server_key, a, 128);
+    free(a);
+    return (0);
+}
+
 /*
  * Processing of ingoing requests
+ * this par is using the ws protocol
+ * no ssl because of cryptographic issues (it's a PICO)
  * */
 err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
     HR_CONNECT_STATE_T *con_state = (HR_CONNECT_STATE_T *) arg;
@@ -526,15 +564,16 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
     assert(con_state && con_state->pcb == pcb);
     if (p->tot_len > 0) {
         DEBUG_printf("hr_server_recv %d err %d\n", p->tot_len, err);
-        // for (struct pbuf *q = p; q != NULL; q = q->next) {
-        //     DEBUG_printf("in: %.*s\n", q->len, q->payload);
-        // }
+        for (struct pbuf *q = p; q != NULL; q = q->next) {
+            DEBUG_printf("in: %.*s\n", q->len, q->payload);
+        }
         // Copy the request into the buffer
         pbuf_copy_partial(p,
                 con_state->headers,
                 p->tot_len > sizeof(con_state->headers) - 1 ? sizeof(con_state->headers) - 1 : p->tot_len,
                 0);
         // Handle GET request
+        t_hr_con_list *cl;
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
             // parse request and params
             /* char *request = con_state->headers + sizeof(HTTP_GET); // + space
@@ -552,14 +591,40 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             }
             DEBUG_printf("Request: %s?%s\n", request, params); */
             // Generate content
-            con_state->result_len = snprintf(con_state->result, sizeof(con_state->result), HR_CON_OK,
-                    to_us_since_boot(get_absolute_time()));
-            con_state->header_len = snprintf(con_state->headers,
-                    sizeof(con_state->headers),
-                    HR_PULSE_HEADERS,
-                    200,
-                    con_state->result_len);
-            // DEBUG_printf("Result: %d\n",     con_state->result_len);
+            // con_state->result_len = snprintf(con_state->result, sizeof(con_state->result), HR_CON_OK,
+            //         to_us_since_boot(get_absolute_time()));
+            DEBUG_printf("It's a GET\n");
+            char client_key[128];
+            extract_header(con_state->headers, "Sec-WebSocket-Key", client_key, 128);
+            if (!client_key) {
+                DEBUG_printf("No key : bad request");
+                // no key -> bad request
+                return (hr_close_client_connection(con_state, pcb, ERR_ABRT));
+            }
+            DEBUG_printf("Client key : %s\n", client_key);
+            cl = con_state->server->con_list;
+            uint32_t size = strlen(client_key);
+            while (cl) {
+                if (strncmp(cl->client_key, client_key, size) == 0) {
+                    DEBUG_printf("Socket already authenticated.\n");
+                    break;
+                }
+            }
+            if (!cl) { // handshake not done yet
+                char server_key[128];
+                generate_handshake(cl->client_key, server_key);
+                con_state->header_len = snprintf(con_state->headers,
+                        sizeof(con_state->headers),
+                        HR_HEADER_HANDSHAKE,
+                        101,
+                        con_state->result_len,
+                        server_key);
+                err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
+                if (err != ERR_OK) {
+                    DEBUG_printf("Handshake failed,\n");
+                    return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
+                }
+            }
             // Check we had enough buffer space
             if (con_state->result_len > sizeof(con_state->result) - 1) {
                 DEBUG_printf("Too much result data %d\n", con_state->result_len);
@@ -580,7 +645,7 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
                     return (hr_close_client_connection(con_state, pcb, err));
                 }
             }
-            add_con(&con_state->server->con_list, con_state);
+            t_hr_con_list *last = add_con(&con_state->server->con_list, con_state);
         }
         tcp_recved(pcb, p->tot_len);
     }
@@ -694,7 +759,7 @@ static bool hr_server_open(void *arg, const char *ap_name) {
     tcp_arg(state->server_pcb, state);
     tcp_accept(state->server_pcb, hr_server_accept);
 
-    printf("hr server is online.\n", ap_name);
+    printf("hr server is online %s.\n", ap_name);
     return (true);
 }
 
@@ -756,8 +821,8 @@ void hr_measure(HR_SERVER_T *state) {
     // irq_set_enabled(IO_IRQ_BANK0, true);
     while (!state->complete) {
         tight_loop_contents();
-        // DEBUG_printf("test\n");
-        sleep_ms(1000);
+        DEBUG_printf("ping\n");
+        sleep_ms(5000);
     }
 }
 
