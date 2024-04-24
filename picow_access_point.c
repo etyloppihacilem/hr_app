@@ -64,7 +64,9 @@
 #include "index.html.h"
 #define LED_GPIO 0
 #define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\r\nLocation: http://%s" INDEX_HTML "\r\n\r\n"
+#define HEADER_MAX_LEN 1024
 #define RESULT_MAX_LEN 2048
+#define KEY_MAX_LEN 128
 
 typedef struct TCP_SERVER_T_ {
     struct tcp_pcb  *server_pcb;
@@ -76,7 +78,7 @@ typedef struct TCP_SERVER_T_ {
 typedef struct TCP_CONNECT_STATE_T_ {
     struct tcp_pcb *pcb;
     int            sent_len;
-    char           headers[128];
+    char           headers[HEADER_MAX_LEN];
     char           result[RESULT_MAX_LEN];
     int            header_len;
     int            result_len;
@@ -85,7 +87,7 @@ typedef struct TCP_CONNECT_STATE_T_ {
 
 typedef struct s_hr_con_list {
     struct HR_CONNECT_STATE_T_ *con;
-    char                       client_key[128];
+    char                       client_key[KEY_MAX_LEN];
     struct s_hr_con_list       *next;
 } t_hr_con_list;
 
@@ -100,8 +102,8 @@ typedef struct HR_SERVER_T_ {        // to add special list of connected clients
 typedef struct HR_CONNECT_STATE_T_ { // to add special keep alive stuff
     struct tcp_pcb *pcb;
     int            sent_len;
-    char           headers[128];
-    char           result[2048];
+    char           headers[HEADER_MAX_LEN];
+    char           result[RESULT_MAX_LEN];
     int            header_len;
     int            result_len;
     ip_addr_t      *gw;
@@ -262,12 +264,16 @@ char *extract_header(char *header, char *value, char *ret, uint32_t ret_size) {
     b = h;
     while (*b && *b != '\r' && *b != '\n')
         b++;
+    char *tmp = ft_substr(h, 0, b - h);
+    if (!tmp)
+        return (0);
     if (ret) {
-        ft_strlcpy(ret, h, ret_size);
-        bzero(ret + (b - h), ret_size - (b - h) - 1);
+        bzero(ret, ret_size);
+        ft_strlcpy(ret, tmp, ret_size);
+        free(tmp);
         return (ret);
     }
-    return (ft_substr(h, 0, b - h));
+    return (tmp);
 }
 
 /*
@@ -293,8 +299,8 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                 0);
         // Handle GET request
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
-            char host[128];
-            extract_header(con_state->headers, "Host:", host, 128);
+            char host[KEY_MAX_LEN];
+            extract_header(con_state->headers, "Host:", host, KEY_MAX_LEN);
             // DEBUG_printf("HOST : '%s'\n", host);
             char *request = con_state->headers + sizeof(HTTP_GET); // + space
             char *params  = strchr(request, '?');
@@ -532,19 +538,19 @@ static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
 }
 
 int generate_handshake(char *client_key, char *server_key) {
-    char tmp[128];
+    char tmp[KEY_MAX_LEN];
 
     return (0);
-    bzero(tmp, 128);
-    bzero(server_key, 128);
-    ft_strlcpy(tmp, client_key, 128);
-    ft_strlcat(tmp, WS_MAGIC_STRING, 128);
+    bzero(tmp, KEY_MAX_LEN);
+    bzero(server_key, KEY_MAX_LEN);
+    ft_strlcpy(tmp, client_key, KEY_MAX_LEN);
+    ft_strlcat(tmp, WS_MAGIC_STRING, KEY_MAX_LEN);
     SHA1(server_key, tmp, strlen(tmp));
     char *a = b64_encode(server_key, strlen(server_key));
     if (!a)
         return (-1);
     DEBUG_printf("server key : %s\n", a);
-    ft_strlcpy(server_key, a, 128);
+    ft_strlcpy(server_key, a, KEY_MAX_LEN);
     free(a);
     return (0);
 }
@@ -594,8 +600,8 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             // con_state->result_len = snprintf(con_state->result, sizeof(con_state->result), HR_CON_OK,
             //         to_us_since_boot(get_absolute_time()));
             DEBUG_printf("It's a GET\n");
-            char client_key[128];
-            extract_header(con_state->headers, "Sec-WebSocket-Key", client_key, 128);
+            char client_key[KEY_MAX_LEN];
+            extract_header(con_state->headers, "Sec-WebSocket-Key:", client_key, KEY_MAX_LEN);
             if (!client_key) {
                 DEBUG_printf("No key : bad request");
                 // no key -> bad request
@@ -611,7 +617,7 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
                 }
             }
             if (!cl) { // handshake not done yet
-                char server_key[128];
+                char server_key[KEY_MAX_LEN];
                 generate_handshake(cl->client_key, server_key);
                 con_state->header_len = snprintf(con_state->headers,
                         sizeof(con_state->headers),
@@ -624,28 +630,28 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
                     DEBUG_printf("Handshake failed,\n");
                     return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
                 }
+                add_con(&con_state->server->con_list, con_state);
             }
             // Check we had enough buffer space
-            if (con_state->result_len > sizeof(con_state->result) - 1) {
-                DEBUG_printf("Too much result data %d\n", con_state->result_len);
-                return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
-            }
-            // Send the headers to the client
-            con_state->sent_len = 0;
-            err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
-            if (err != ERR_OK) {
-                DEBUG_printf("failed to write header data %d\n", err);
-                return (hr_close_client_connection(con_state, pcb, err));
-            }
-            // Send the body to the client
-            if (con_state->result_len) {
-                err = tcp_write(pcb, con_state->result, con_state->result_len, 0);
-                if (err != ERR_OK) {
-                    DEBUG_printf("failed to write result data %d\n", err);
-                    return (hr_close_client_connection(con_state, pcb, err));
-                }
-            }
-            t_hr_con_list *last = add_con(&con_state->server->con_list, con_state);
+            // if (con_state->result_len > sizeof(con_state->result) - 1) {
+            //     DEBUG_printf("Too much result data %d\n", con_state->result_len);
+            //     return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
+            // }
+            // // Send the headers to the client
+            // con_state->sent_len = 0;
+            // err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
+            // if (err != ERR_OK) {
+            //     DEBUG_printf("failed to write header data %d\n", err);
+            //     return (hr_close_client_connection(con_state, pcb, err));
+            // }
+            // // Send the body to the client
+            // if (con_state->result_len) {
+            //     err = tcp_write(pcb, con_state->result, con_state->result_len, 0);
+            //     if (err != ERR_OK) {
+            //         DEBUG_printf("failed to write result data %d\n", err);
+            //         return (hr_close_client_connection(con_state, pcb, err));
+            //     }
+            // }
         }
         tcp_recved(pcb, p->tot_len);
     }
