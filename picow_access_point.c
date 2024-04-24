@@ -527,7 +527,7 @@ static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     DEBUG_printf("hr_server_sent %u\n", len);
     con_state->sent_len += len;
     if (con_state->sent_len >= con_state->header_len + con_state->result_len) {
-        if (con_state->done) { // change to constate value
+        if (con_state->done || 1) { // change to constate value
             DEBUG_printf("all done, closing hr connection\n");
             return (hr_close_client_connection(con_state, pcb, ERR_OK));
         } else {
@@ -540,16 +540,25 @@ static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
 int generate_handshake(char *client_key, char *server_key) {
     char tmp[KEY_MAX_LEN];
 
-    return (0);
     bzero(tmp, KEY_MAX_LEN);
     bzero(server_key, KEY_MAX_LEN);
+    // DEBUG_printf("tmp        : '%s'\n", tmp);
+    // DEBUG_printf("server_key : '%s'\n", server_key);
     ft_strlcpy(tmp, client_key, KEY_MAX_LEN);
+    // DEBUG_printf("tmp        : '%s'\n", tmp);
+    // DEBUG_printf("server_key : '%s'\n", server_key);
     ft_strlcat(tmp, WS_MAGIC_STRING, KEY_MAX_LEN);
+    // DEBUG_printf("tmp        : '%s'\n", tmp);
+    // DEBUG_printf("server_key : '%s'\n", server_key);
     SHA1(server_key, tmp, strlen(tmp));
+    // DEBUG_printf("tmp        : '%s'\n", tmp);
+    // DEBUG_printf("server_key : '%s'\n", server_key);
     char *a = b64_encode(server_key, strlen(server_key));
+    // DEBUG_printf("tmp        : '%s'\n", tmp);
+    // DEBUG_printf("server_key : '%s'\n", server_key);
+    // DEBUG_printf("a          : '%s'\n", a);
     if (!a)
         return (-1);
-    DEBUG_printf("server key : %s\n", a);
     ft_strlcpy(server_key, a, KEY_MAX_LEN);
     free(a);
     return (0);
@@ -618,13 +627,16 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
             }
             if (!cl) { // handshake not done yet
                 char server_key[KEY_MAX_LEN];
+                DEBUG_printf("Processing handshake\n");
                 generate_handshake(cl->client_key, server_key);
+                DEBUG_printf("Handshake key : %s\n", server_key);
                 con_state->header_len = snprintf(con_state->headers,
                         sizeof(con_state->headers),
                         HR_HEADER_HANDSHAKE,
                         101,
                         con_state->result_len,
                         server_key);
+                DEBUG_printf("Headers : \n%s\n", con_state->headers);
                 err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
                 if (err != ERR_OK) {
                     DEBUG_printf("Handshake failed,\n");
