@@ -21,6 +21,7 @@
 // input hardware
 
 #define PULSE_IN 28
+#define HR_PORT 44242
 
 #define TCP_PORT 80
 #define DEBUG_printf printf
@@ -61,6 +62,67 @@ typedef struct TCP_CONNECT_STATE_T_ {
     int            result_len;
     ip_addr_t      *gw;
 } TCP_CONNECT_STATE_T;
+
+typedef struct s_hr_con_list {
+    struct HR_CONNECT_STATE_T_ *con;
+    struct s_hr_con_list       *next;
+} t_hr_con_list;
+
+typedef struct HR_SERVER_T_ {        // to add special list of connected clients
+    struct tcp_pcb  *server_pcb;
+    bool            complete;
+    ip_addr_t       gw;
+    async_context_t *context;
+    t_hr_con_list   *con_list;
+} HR_SERVER_T;
+
+typedef struct HR_CONNECT_STATE_T_ { // to add special keep alive stuff
+    struct tcp_pcb *pcb;
+    int            sent_len;
+    char           headers[128];
+    char           result[2048];
+    int            header_len;
+    int            result_len;
+    ip_addr_t      *gw;
+    HR_SERVER_T    *server;
+    char           done;
+} HR_CONNECT_STATE_T;
+
+t_hr_con_list *add_con(t_hr_con_list **list, HR_CONNECT_STATE_T *con = NULL) {
+    t_hr_con_list *i;
+    t_hr_con_list *to_add;
+
+    if (!list)
+        return (DEBUG_printf("No list provided to add, abort.\n"), NULL);
+    i           = *list;
+    to_add      = calloc(1, sizeof(t_hr_con_list));
+    if (!to_add)
+        return (DEBUG_printf("Failed to allocate memory.\n"), NULL);
+    to_add->con = con;
+    if (!i) {
+        *list = to_add;
+        return (*list);
+    }
+    while (i->next)
+        i = i->next;
+    i->next     = to_add;
+    return (to_add);
+}
+
+void         clean_con(t_hr_con_list **list) {
+    t_hr_con_list *i;
+
+    if (!list)
+        return;
+    i = *list;
+    while (i) {
+        *list = i->next;
+        if (i->con)
+            free(i->con);
+        free(i);
+        i     = *list;
+    }
+}
 
 static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
     if (client_pcb) {
@@ -289,7 +351,7 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
 }
 
 /*
- * ALL TPC macros are NOT our problem
+ * ALL TCP macros are NOT our problem
  * (you don't wanna look at them)
  * */
 static bool tcp_server_open(void *arg, const char *ap_name) {
@@ -317,6 +379,240 @@ static bool tcp_server_open(void *arg, const char *ap_name) {
     }
     tcp_arg(state->server_pcb, state);
     tcp_accept(state->server_pcb, tcp_server_accept);
+
+    printf("Try connecting to '%s' (press 'd' to disable access point)\n", ap_name);
+    return (true);
+}
+
+/*
+ * Below this is not TCP but HR
+ * */
+
+static err_t hr_close_client_connection(HR_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
+    if (client_pcb) {
+        assert(con_state && con_state->pcb == client_pcb);
+        tcp_arg(client_pcb, NULL);
+        tcp_poll(client_pcb, NULL, 0);
+        tcp_sent(client_pcb, NULL);
+        tcp_recv(client_pcb, NULL);
+        tcp_err(client_pcb, NULL);
+        err_t err = tcp_close(client_pcb);
+        if (err != ERR_OK) {
+            DEBUG_printf("close failed %d, calling abort\n", err);
+            tcp_abort(client_pcb);
+            close_err = ERR_ABRT;
+        }
+        if (con_state) {
+            free(con_state);
+        }
+    }
+    return (close_err);
+}
+
+static void  hr_server_close(TCP_SERVER_T *state) {
+    if (state->server_pcb) {
+        tcp_arg(state->server_pcb, NULL);
+        tcp_close(state->server_pcb);
+        state->server_pcb = NULL;
+    }
+}
+
+static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
+    TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T *) arg;
+
+    DEBUG_printf("hr_server_sent %u\n", len);
+    con_state->sent_len += len;
+    if (con_state->sent_len >= con_state->header_len + con_state->result_len) {
+        if (1) { // change to constate value
+            DEBUG_printf("all done, closing hr connection\n");
+            return (hr_close_client_connection(con_state, pcb, ERR_OK));
+        } else {
+            DEBUG_printf("Message sent successfully.\n");
+        }
+    }
+    DEBUG_printf("Hr server error packet too long ??\n");
+    return (ERR_OK);
+}
+
+/*
+ * Processing of ingoing requests
+ * */
+err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
+    HR_CONNECT_STATE_T *con_state = (HR_CONNECT_STATE_T *) arg;
+
+    if (!p) {
+        DEBUG_printf("hr connection closed\n");
+        return (hr_close_client_connection(con_state, pcb, ERR_OK));
+    }
+    assert(con_state && con_state->pcb == pcb);
+    if (p->tot_len > 0) {
+        DEBUG_printf("hr_server_recv %d err %d\n", p->tot_len, err);
+        // for (struct pbuf *q = p; q != NULL; q = q->next) {
+        //     DEBUG_printf("in: %.*s\n", q->len, q->payload);
+        // }
+        // Copy the request into the buffer
+        pbuf_copy_partial(p,
+                con_state->headers,
+                p->tot_len > sizeof(con_state->headers) - 1 ? sizeof(con_state->headers) - 1 : p->tot_len,
+                0);
+        // Handle GET request
+        if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
+            char *request = con_state->headers + sizeof(HTTP_GET); // + space
+            char *params  = strchr(request, '?');
+            if (params) {
+                if (*params) {
+                    char *space = strchr(request, ' ');
+                    *params++ = 0;
+                    if (space) {
+                        *space = 0;
+                    }
+                } else {
+                    params = NULL;
+                }
+            }
+            // Generate content
+            // con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
+            DEBUG_printf("Request: %s?%s\n", request, params);
+            // DEBUG_printf("Result: %d\n",     con_state->result_len);
+            // Check we had enough buffer space
+            if (con_state->result_len > sizeof(con_state->result) - 1) {
+                DEBUG_printf("Too much result data %d\n", con_state->result_len);
+                return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
+            }
+            // Generate web page
+            /* if (con_state->result_len > 0) {
+                if (strncmp(request, STYLE_CSS, sizeof(STYLE_CSS) - 1) == 0) {
+                    con_state->header_len = snprintf(con_state->headers,
+                            sizeof(con_state->headers),
+                            HTTP_RESPONSE_HEADERS_CSS,
+                            200,
+                            con_state->result_len);
+                } else if (strncmp(request, SCRIPT_JS, sizeof(SCRIPT_JS) - 1) == 0) {
+                    con_state->header_len = snprintf(con_state->headers,
+                            sizeof(con_state->headers),
+                            HTTP_RESPONSE_HEADERS_JS,
+                            200,
+                            con_state->result_len);
+                } else {
+                    con_state->header_len = snprintf(con_state->headers,
+                            sizeof(con_state->headers),
+                            HTTP_RESPONSE_HEADERS,
+                            200,
+                            con_state->result_len);
+                }
+                if (con_state->header_len > sizeof(con_state->headers) - 1) {
+                    DEBUG_printf("Too much header data %d\n", con_state->header_len);
+                    return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
+                }
+            } else {
+                // Send redirect
+                con_state->header_len = snprintf(con_state->headers,
+                        sizeof(con_state->headers),
+                        HTTP_RESPONSE_REDIRECT,
+                        ipaddr_ntoa(con_state->gw));
+                DEBUG_printf("Sending redirect %s", con_state->headers);
+            } */
+            // Send the headers to the client
+            con_state->sent_len = 0;
+            /* err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
+            if (err != ERR_OK) {
+                DEBUG_printf("failed to write header data %d\n", err);
+                return (hr_close_client_connection(con_state, pcb, err));
+            }
+            // Send the body to the client
+            if (con_state->result_len) {
+                err = tcp_write(pcb, con_state->result, con_state->result_len, 0);
+                if (err != ERR_OK) {
+                    DEBUG_printf("failed to write result data %d\n", err);
+                    return (hr_close_client_connection(con_state, pcb, err));
+                }
+            } */
+            add_con(&con_state->server->con_list, con_state);
+        }
+        tcp_recved(pcb, p->tot_len);
+    }
+    pbuf_free(p);
+    return (ERR_OK);
+}
+
+static err_t hr_server_poll(void *arg, struct tcp_pcb *pcb) {
+    HR_CONNECT_STATE_T *con_state = (HR_CONNECT_STATE_T *) arg;
+
+    DEBUG_printf("hr_server_poll_fn <== INVESTIGATE THIS CALL\n");
+    return (hr_close_client_connection(con_state, pcb, ERR_OK)); // Just disconnect client?
+}
+
+static void  hr_server_err(void *arg, err_t err) {
+    HR_CONNECT_STATE_T *con_state = (HR_CONNECT_STATE_T *) arg;
+
+    if (err != ERR_ABRT) {
+        DEBUG_printf("tcp_client_err_fn %d\n", err);
+        hr_close_client_connection(con_state, con_state->pcb, err);
+    }
+}
+
+/*
+ * Notes:
+ * This function is used to process TCP requests
+ * */
+static err_t hr_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
+    HR_SERVER_T        *state     = (HR_SERVER_T *) arg;
+
+    if (err != ERR_OK || client_pcb == NULL) {
+        DEBUG_printf("failure in hr accept\n");
+        return (ERR_VAL);
+    }
+    DEBUG_printf("client connected on hr diffusion list\n");
+
+    // Create the state for the connection
+    HR_CONNECT_STATE_T *con_state = calloc(1, sizeof(HR_CONNECT_STATE_T));
+    if (!con_state) {
+        DEBUG_printf("failed to allocate hr connect state\n");
+        return (ERR_MEM);
+    }
+    con_state->server = state;
+    con_state->pcb    = client_pcb;                              // for checking
+    con_state->gw     = &state->gw;
+
+    // setup connection to client
+    tcp_arg(client_pcb, con_state);                              // function used to close connection
+    tcp_sent(client_pcb, hr_server_sent);                        // function used when something is sent to client
+    tcp_recv(client_pcb, hr_server_recv);                        // function called when request is recieved from client
+    tcp_poll(client_pcb, hr_server_poll, POLL_TIME_S * 2);
+    tcp_err(client_pcb, hr_server_err);                          // gestions des erreurs du socket
+
+    return (ERR_OK);
+}
+
+/*
+ * ALL TCP macros are NOT our problem
+ * (you don't wanna look at them)
+ * */
+static bool hr_server_open(void *arg, const char *ap_name) {
+    HR_SERVER_T    *state = (HR_SERVER_T *) arg;
+
+    DEBUG_printf("starting hr server on port %d\n", HR_PORT);
+
+    struct tcp_pcb *pcb   = tcp_new_ip_type(IPADDR_TYPE_ANY);    // protocol conntrol blocks
+    if (!pcb) {
+        DEBUG_printf("failed to create pcb\n");
+        return (false);
+    }
+    err_t          err    = tcp_bind(pcb, IP_ANY_TYPE, HR_PORT); // reserve a specific port
+    if (err) {
+        DEBUG_printf("failed to bind to port %d\n", HR_PORT);
+        return (false);
+    }
+    state->server_pcb = tcp_listen_with_backlog(pcb, 1);         // get tcp listening to ingoing connections
+    if (!state->server_pcb) {
+        DEBUG_printf("failed to listen\n");
+        if (pcb) {
+            tcp_close(pcb);
+        }
+        return (false);
+    }
+    tcp_arg(state->server_pcb, state);
+    tcp_accept(state->server_pcb, hr_server_accept);
 
     printf("Try connecting to '%s' (press 'd' to disable access point)\n", ap_name);
     return (true);
@@ -359,9 +655,11 @@ void                               gpio_callback(uint gpio, uint32_t events) {
 void                               hr_measure(TCP_SERVER_T *state) {
     DEBUG_printf("Ready to measure heart rate !\n");
     gpio_set_irq_enabled_with_callback(PULSE_IN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
-    irq_set_enabled(IO_IRQ_BANK0, true);
+    // irq_set_enabled(IO_IRQ_BANK0, true);
     while (!state->complete) {
         tight_loop_contents();
+        DEBUG_printf("test\n");
+        sleep_ms(500);
     }
 }
 
