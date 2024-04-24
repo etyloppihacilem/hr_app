@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include <stdint.h>
 #include <string.h>
 
 #include "pico/cyw43_arch.h"
@@ -22,6 +23,14 @@
 
 #define PULSE_IN 28
 #define HR_PORT 44242
+#define HR_PULSE_HEADERS \
+        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: application/json; charset=utf-8\nConnection: keep-alive\n\n"
+#define HR_END_HEADERS \
+        "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: application/json; charset=utf-8\nConnection: close\n\n"
+#define HR_DATA \
+        "{type:\"%s\",timestamp:%uld}"
+#define HR_CON_OK \
+        "CONNECTED"
 
 #define TCP_PORT 80
 #define DEBUG_printf printf
@@ -45,6 +54,7 @@
 #include "index.html.h"
 #define LED_GPIO 0
 #define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s" INDEX_HTML "\n\n"
+#define RESULT_MAX_LEN 2048
 
 typedef struct TCP_SERVER_T_ {
     struct tcp_pcb  *server_pcb;
@@ -57,7 +67,7 @@ typedef struct TCP_CONNECT_STATE_T_ {
     struct tcp_pcb *pcb;
     int            sent_len;
     char           headers[128];
-    char           result[2048];
+    char           result[RESULT_MAX_LEN];
     int            header_len;
     int            result_len;
     ip_addr_t      *gw;
@@ -88,14 +98,14 @@ typedef struct HR_CONNECT_STATE_T_ { // to add special keep alive stuff
     char           done;
 } HR_CONNECT_STATE_T;
 
-t_hr_con_list *add_con(t_hr_con_list **list, HR_CONNECT_STATE_T *con = NULL) {
+t_hr_con_list *add_con(t_hr_con_list **list, HR_CONNECT_STATE_T *con) {
     t_hr_con_list *i;
     t_hr_con_list *to_add;
 
     if (!list)
         return (DEBUG_printf("No list provided to add, abort.\n"), NULL);
-    i           = *list;
-    to_add      = calloc(1, sizeof(t_hr_con_list));
+    i      = *list;
+    to_add = calloc(1, sizeof(t_hr_con_list));
     if (!to_add)
         return (DEBUG_printf("Failed to allocate memory.\n"), NULL);
     to_add->con = con;
@@ -105,11 +115,36 @@ t_hr_con_list *add_con(t_hr_con_list **list, HR_CONNECT_STATE_T *con = NULL) {
     }
     while (i->next)
         i = i->next;
-    i->next     = to_add;
+    i->next = to_add;
     return (to_add);
 }
 
-void         clean_con(t_hr_con_list **list) {
+void remove_con(t_hr_con_list **list, HR_CONNECT_STATE_T *con) {
+    t_hr_con_list *prev;
+    t_hr_con_list *i;
+
+    if (!list)
+        return;
+    prev = NULL;
+    i    = *list;
+    while (i) {
+        if (i->con == con) {
+            if (prev)
+                prev->next = i->next;
+            else {
+                *list = i->next;
+                free(i);
+                i = (*list)->next;
+                continue;
+            }
+            free(i);
+        } else
+            prev = i;
+        i = prev->next;
+    }
+}
+
+void clean_con(t_hr_con_list **list) {
     t_hr_con_list *i;
 
     if (!list)
@@ -120,7 +155,7 @@ void         clean_con(t_hr_con_list **list) {
         if (i->con)
             free(i->con);
         free(i);
-        i     = *list;
+        i = *list;
     }
 }
 
@@ -145,7 +180,7 @@ static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct 
     return (close_err);
 }
 
-static void  tcp_server_close(TCP_SERVER_T *state) {
+static void tcp_server_close(TCP_SERVER_T *state) {
     if (state->server_pcb) {
         tcp_arg(state->server_pcb, NULL);
         tcp_close(state->server_pcb);
@@ -165,7 +200,7 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return (ERR_OK);
 }
 
-static int   test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
+static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
     int len = 0;
 
     if (strncmp(request, INDEX_HTML, sizeof(INDEX_HTML) - 1) == 0) {
@@ -178,7 +213,7 @@ static int   test_server_content(const char *request, const char *params, char *
         // Get the state of the led
         bool value;
         cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
-        int  led_state = value;
+        int led_state = value;
         // See if the user changed it
         if (params) {
             int led_param = sscanf(params, LED_PARAM, &led_state);
@@ -241,7 +276,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
             // Generate content
             con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
             DEBUG_printf("Request: %s?%s\n", request, params);
-            DEBUG_printf("Result: %d\n",     con_state->result_len);
+            DEBUG_printf("Result: %d\n", con_state->result_len);
             // Check we had enough buffer space
             if (con_state->result_len > sizeof(con_state->result) - 1) {
                 DEBUG_printf("Too much result data %d\n", con_state->result_len);
@@ -309,7 +344,7 @@ static err_t tcp_server_poll(void *arg, struct tcp_pcb *pcb) {
     return (tcp_close_client_connection(con_state, pcb, ERR_OK)); // Just disconnect clent?
 }
 
-static void  tcp_server_err(void *arg, err_t err) {
+static void tcp_server_err(void *arg, err_t err) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T *) arg;
 
     if (err != ERR_ABRT) {
@@ -323,7 +358,7 @@ static void  tcp_server_err(void *arg, err_t err) {
  * This function is used to process TCP requests
  * */
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
-    TCP_SERVER_T        *state     = (TCP_SERVER_T *) arg;
+    TCP_SERVER_T *state = (TCP_SERVER_T *) arg;
 
     if (err != ERR_OK || client_pcb == NULL) {
         DEBUG_printf("failure in accept\n");
@@ -355,16 +390,16 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
  * (you don't wanna look at them)
  * */
 static bool tcp_server_open(void *arg, const char *ap_name) {
-    TCP_SERVER_T   *state = (TCP_SERVER_T *) arg;
+    TCP_SERVER_T *state = (TCP_SERVER_T *) arg;
 
     DEBUG_printf("starting server on port %d\n", TCP_PORT);
 
-    struct tcp_pcb *pcb   = tcp_new_ip_type(IPADDR_TYPE_ANY);     // protocol conntrol blocks
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);       // protocol conntrol blocks
     if (!pcb) {
         DEBUG_printf("failed to create pcb\n");
         return (false);
     }
-    err_t          err    = tcp_bind(pcb, IP_ANY_TYPE, TCP_PORT); // reserve a specific port (aka 80 for http)
+    err_t err = tcp_bind(pcb, IP_ANY_TYPE, TCP_PORT);             // reserve a specific port (aka 80 for http)
     if (err) {
         DEBUG_printf("failed to bind to port %d\n", TCP_PORT);
         return (false);
@@ -387,8 +422,13 @@ static bool tcp_server_open(void *arg, const char *ap_name) {
 /*
  * Below this is not TCP but HR
  * */
-
 static err_t hr_close_client_connection(HR_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
+    if (!con_state->done) {
+        bzero(con_state->headers, sizeof(con_state->headers));
+        con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HR_END_HEADERS, 200, 0);
+        tcp_write(client_pcb, con_state->headers, con_state->header_len, 0);
+        con_state->done = 1;
+    }
     if (client_pcb) {
         assert(con_state && con_state->pcb == client_pcb);
         tcp_arg(client_pcb, NULL);
@@ -403,13 +443,14 @@ static err_t hr_close_client_connection(HR_CONNECT_STATE_T *con_state, struct tc
             close_err = ERR_ABRT;
         }
         if (con_state) {
-            free(con_state);
+            remove_con(&con_state->server->con_list, con_state);
         }
     }
     return (close_err);
 }
 
-static void  hr_server_close(TCP_SERVER_T *state) {
+static void hr_server_close(HR_SERVER_T *state) {
+    clean_con(&state->con_list);
     if (state->server_pcb) {
         tcp_arg(state->server_pcb, NULL);
         tcp_close(state->server_pcb);
@@ -418,12 +459,12 @@ static void  hr_server_close(TCP_SERVER_T *state) {
 }
 
 static err_t hr_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
-    TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T *) arg;
+    HR_CONNECT_STATE_T *con_state = (HR_CONNECT_STATE_T *) arg;
 
     DEBUG_printf("hr_server_sent %u\n", len);
     con_state->sent_len += len;
     if (con_state->sent_len >= con_state->header_len + con_state->result_len) {
-        if (1) { // change to constate value
+        if (con_state->done) { // change to constate value
             DEBUG_printf("all done, closing hr connection\n");
             return (hr_close_client_connection(con_state, pcb, ERR_OK));
         } else {
@@ -457,7 +498,8 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
                 0);
         // Handle GET request
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
-            char *request = con_state->headers + sizeof(HTTP_GET); // + space
+            // parse request and params
+            /* char *request = con_state->headers + sizeof(HTTP_GET); // + space
             char *params  = strchr(request, '?');
             if (params) {
                 if (*params) {
@@ -470,51 +512,24 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
                     params = NULL;
                 }
             }
+            DEBUG_printf("Request: %s?%s\n", request, params); */
             // Generate content
-            // con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
-            DEBUG_printf("Request: %s?%s\n", request, params);
+            con_state->result_len = snprintf(con_state->result, sizeof(con_state->result), HR_CON_OK,
+                    to_us_since_boot(get_absolute_time()));
+            con_state->header_len = snprintf(con_state->headers,
+                    sizeof(con_state->headers),
+                    HR_PULSE_HEADERS,
+                    200,
+                    con_state->result_len);
             // DEBUG_printf("Result: %d\n",     con_state->result_len);
             // Check we had enough buffer space
             if (con_state->result_len > sizeof(con_state->result) - 1) {
                 DEBUG_printf("Too much result data %d\n", con_state->result_len);
                 return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
             }
-            // Generate web page
-            /* if (con_state->result_len > 0) {
-                if (strncmp(request, STYLE_CSS, sizeof(STYLE_CSS) - 1) == 0) {
-                    con_state->header_len = snprintf(con_state->headers,
-                            sizeof(con_state->headers),
-                            HTTP_RESPONSE_HEADERS_CSS,
-                            200,
-                            con_state->result_len);
-                } else if (strncmp(request, SCRIPT_JS, sizeof(SCRIPT_JS) - 1) == 0) {
-                    con_state->header_len = snprintf(con_state->headers,
-                            sizeof(con_state->headers),
-                            HTTP_RESPONSE_HEADERS_JS,
-                            200,
-                            con_state->result_len);
-                } else {
-                    con_state->header_len = snprintf(con_state->headers,
-                            sizeof(con_state->headers),
-                            HTTP_RESPONSE_HEADERS,
-                            200,
-                            con_state->result_len);
-                }
-                if (con_state->header_len > sizeof(con_state->headers) - 1) {
-                    DEBUG_printf("Too much header data %d\n", con_state->header_len);
-                    return (hr_close_client_connection(con_state, pcb, ERR_CLSD));
-                }
-            } else {
-                // Send redirect
-                con_state->header_len = snprintf(con_state->headers,
-                        sizeof(con_state->headers),
-                        HTTP_RESPONSE_REDIRECT,
-                        ipaddr_ntoa(con_state->gw));
-                DEBUG_printf("Sending redirect %s", con_state->headers);
-            } */
             // Send the headers to the client
             con_state->sent_len = 0;
-            /* err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
+            err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
             if (err != ERR_OK) {
                 DEBUG_printf("failed to write header data %d\n", err);
                 return (hr_close_client_connection(con_state, pcb, err));
@@ -526,13 +541,40 @@ err_t hr_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
                     DEBUG_printf("failed to write result data %d\n", err);
                     return (hr_close_client_connection(con_state, pcb, err));
                 }
-            } */
+            }
             add_con(&con_state->server->con_list, con_state);
         }
         tcp_recved(pcb, p->tot_len);
     }
     pbuf_free(p);
     return (ERR_OK);
+}
+
+static err_t hr_server_push(HR_CONNECT_STATE_T *con, char *data) {
+    if (!con)
+        return (ERR_ABRT);
+    con->sent_len   = 0;
+    con->header_len = 0;
+    con->result_len = 0;
+    bzero(con->headers, sizeof(con->headers));
+    bzero(con->result,  sizeof(con->result));
+    con->result_len = snprintf(con->result, sizeof(con->result), "%s", data);
+    con->header_len = snprintf(con->headers, sizeof(con->headers), HR_PULSE_HEADERS, 200, con->result_len);
+    DEBUG_printf("Sending data : '%s'\n", data);
+    err_t err = tcp_write(con->pcb, con->headers, con->header_len, 0);
+    if (err != ERR_OK) {
+        DEBUG_printf("failed to write header data %d\n", err);
+        return (hr_close_client_connection(con, con->pcb, err));
+    }
+    // Send the body to the client
+    if (con->result_len) {
+        err = tcp_write(con->pcb, con->result, con->result_len, 0);
+        if (err != ERR_OK) {
+            DEBUG_printf("failed to write result data %d\n", err);
+            return (hr_close_client_connection(con, con->pcb, err));
+        }
+    }
+    DEBUG_printf("Data sent.");
 }
 
 static err_t hr_server_poll(void *arg, struct tcp_pcb *pcb) {
@@ -542,7 +584,7 @@ static err_t hr_server_poll(void *arg, struct tcp_pcb *pcb) {
     return (hr_close_client_connection(con_state, pcb, ERR_OK)); // Just disconnect client?
 }
 
-static void  hr_server_err(void *arg, err_t err) {
+static void hr_server_err(void *arg, err_t err) {
     HR_CONNECT_STATE_T *con_state = (HR_CONNECT_STATE_T *) arg;
 
     if (err != ERR_ABRT) {
@@ -556,7 +598,7 @@ static void  hr_server_err(void *arg, err_t err) {
  * This function is used to process TCP requests
  * */
 static err_t hr_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
-    HR_SERVER_T        *state     = (HR_SERVER_T *) arg;
+    HR_SERVER_T *state = (HR_SERVER_T *) arg;
 
     if (err != ERR_OK || client_pcb == NULL) {
         DEBUG_printf("failure in hr accept\n");
@@ -589,16 +631,16 @@ static err_t hr_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) 
  * (you don't wanna look at them)
  * */
 static bool hr_server_open(void *arg, const char *ap_name) {
-    HR_SERVER_T    *state = (HR_SERVER_T *) arg;
+    HR_SERVER_T *state = (HR_SERVER_T *) arg;
 
     DEBUG_printf("starting hr server on port %d\n", HR_PORT);
 
-    struct tcp_pcb *pcb   = tcp_new_ip_type(IPADDR_TYPE_ANY);    // protocol conntrol blocks
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);      // protocol conntrol blocks
     if (!pcb) {
         DEBUG_printf("failed to create pcb\n");
         return (false);
     }
-    err_t          err    = tcp_bind(pcb, IP_ANY_TYPE, HR_PORT); // reserve a specific port
+    err_t err = tcp_bind(pcb, IP_ANY_TYPE, HR_PORT);             // reserve a specific port
     if (err) {
         DEBUG_printf("failed to bind to port %d\n", HR_PORT);
         return (false);
@@ -614,13 +656,12 @@ static bool hr_server_open(void *arg, const char *ap_name) {
     tcp_arg(state->server_pcb, state);
     tcp_accept(state->server_pcb, hr_server_accept);
 
-    printf("Try connecting to '%s' (press 'd' to disable access point)\n", ap_name);
+    printf("hr server is online.\n", ap_name);
     return (true);
 }
 
 // This "worker" function is called to safely perform work when instructed by key_pressed_func
-void                               key_pressed_worker_func(async_context_t *context,
-        async_when_pending_worker_t                                        *worker) {
+void key_pressed_worker_func(async_context_t *context, async_when_pending_worker_t *worker) {
     assert(worker->user_data);
     printf("Disabling wifi\n");
     cyw43_arch_disable_ap_mode();
@@ -631,7 +672,7 @@ static async_when_pending_worker_t key_pressed_worker = {
     .do_work = key_pressed_worker_func
 };
 
-void                               key_pressed_func(void *param) {
+void key_pressed_func(void *param) {
     assert(param);
     int key = getchar_timeout_us(0); // get any pending key press but don't wait
     if (key == 'd' || key == 'D') {
@@ -640,20 +681,39 @@ void                               key_pressed_func(void *param) {
     }
 }
 
-void                               pins_init() {
+void pins_init() {
     gpio_init(PULSE_IN);
     gpio_set_dir(PULSE_IN, GPIO_IN);
 }
 
-void                               gpio_callback(uint gpio, uint32_t events) {
+void *g_hr_server = NULL;
+
+void gpio_callback(uint gpio, uint32_t events) {
+    HR_SERVER_T *server = NULL;
+    t_hr_con_list      *i      = NULL;
+
     if (events & GPIO_IRQ_EDGE_RISE) {
         // Le code à exécuter lors d'un front montant
-        DEBUG_printf("Front montant détecté sur le GPIO %d\n", gpio);
+        uint64_t pulse_time = to_us_since_boot(get_absolute_time());
+        HR_SERVER_T *server = (HR_SERVER_T *) g_hr_server;
+        DEBUG_printf("Front montant détecté sur le GPIO %d à %uld\n", gpio, pulse_time);
+        if (!server)
+            return;
+        char result[RESULT_MAX_LEN];
+        bzero(result, sizeof(result));
+        snprintf(result, sizeof(result), HR_DATA, "PULSE", pulse_time);
+        i = server->con_list;
+        while (i) {
+            hr_server_push(i->con, result);
+            i = i->next;
+        }
+        DEBUG_printf("Front montant diffusé.");
     }
 }
 
-void                               hr_measure(TCP_SERVER_T *state) {
+void hr_measure(HR_SERVER_T *state) {
     DEBUG_printf("Ready to measure heart rate !\n");
+    g_hr_server = (void *) state;
     gpio_set_irq_enabled_with_callback(PULSE_IN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     // irq_set_enabled(IO_IRQ_BANK0, true);
     while (!state->complete) {
@@ -663,13 +723,18 @@ void                               hr_measure(TCP_SERVER_T *state) {
     }
 }
 
-int                                main() {
+int main() {
     stdio_init_all();                // init stdio with uart and stuff
     pins_init();
 
-    TCP_SERVER_T  *state    = calloc(1, sizeof(TCP_SERVER_T));
+    TCP_SERVER_T *state = calloc(1, sizeof(TCP_SERVER_T));
     if (!state) {
         DEBUG_printf("failed to allocate state\n");
+        return (1);
+    }
+    HR_SERVER_T *hr_state = calloc(1, sizeof(HR_SERVER_T));
+    if (!hr_state) {
+        DEBUG_printf("failed to allocate hr_state\n");
         return (1);
     }
     if (cyw43_arch_init()) {
@@ -682,30 +747,36 @@ int                                main() {
     async_context_add_when_pending_worker(cyw43_arch_async_context(), &key_pressed_worker);
     stdio_set_chars_available_callback(key_pressed_func, state);
 
-    const char    *ap_name  = "hr_app";
-    const char    *password = "password";
+    const char *ap_name  = "hr_app";
+    const char *password = "password";
 
     cyw43_arch_enable_ap_mode(ap_name, password, CYW43_AUTH_WPA2_AES_PSK);
 
-    ip4_addr_t    mask;
-    IP4_ADDR(ip_2_ip4(&state->gw), 192, 168, 4,   1);  // set gateway
-    IP4_ADDR(ip_2_ip4(&mask),      255, 255, 255, 0);  // set mask
+    ip4_addr_t mask;
+    IP4_ADDR(ip_2_ip4(&state->gw), 192, 168, 4, 1);    // set gateway
+    IP4_ADDR(ip_2_ip4(&mask), 255, 255, 255, 0);       // set mask
 
     // Start the dhcp server
     dhcp_server_t dhcp_server;
     dhcp_server_init(&dhcp_server, &state->gw, &mask); // run dhcp server
 
     // Start the dns server
-    dns_server_t  dns_server;
+    dns_server_t dns_server;
     dns_server_init(&dns_server, &state->gw);          // init dhcp server
     if (!tcp_server_open(state, ap_name)) {
         DEBUG_printf("failed to open server\n");
         return (1);
     }
+    if (!hr_server_open(state, ap_name)) {
+        DEBUG_printf("failed to open hr_server\n");
+        return (1);
+    }
     state->complete = false;
-    hr_measure(state);
+    hr_state->complete = false;
+    hr_measure(hr_state);
 
     tcp_server_close(state);
+    hr_server_close(hr_state);
     dns_server_deinit(&dns_server);
     dhcp_server_deinit(&dhcp_server);
     cyw43_arch_deinit();
