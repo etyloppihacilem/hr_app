@@ -58,7 +58,7 @@
 #define LED_GPIO 0
 #define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\r\nLocation: http://%s" INDEX_HTML "\r\n\r\n"
 #define HEADER_MAX_LEN 1024
-#define RESULT_MAX_LEN 2048
+#define RESULT_MAX_LEN 4096
 #define KEY_MAX_LEN 128
 
 typedef struct TCP_SERVER_T_ {
@@ -597,6 +597,7 @@ int main() {
     state->complete = false;
     hr_measure(state);
 
+    pulse_clean(&local_storage.data);
     tcp_server_close(state);
     dns_server_deinit(&dns_server);
     dhcp_server_deinit(&dhcp_server);

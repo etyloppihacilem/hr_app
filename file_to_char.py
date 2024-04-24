@@ -29,7 +29,7 @@ def file_to_char(file):
     # text = text.replace('`', '\\`')
     text = text.replace('\n', '\\n"\n"')
     text = text.replace('%', '%%')
-    return text
+    return (text)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
