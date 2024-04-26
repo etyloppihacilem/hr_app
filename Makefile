@@ -55,7 +55,7 @@ ${WEB_HEADERS}&:${WEB_SRCS}
 	${PYTHON} ./file_to_char.py ${WEB_SRCS}
 
 push:
-	cd build && openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg -c "adapter speed 10000" -c "program picow_access_point_background.elf verify reset"
+	cd build && openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg -c "adapter speed 5000" -c "program picow_access_point_background.elf verify reset"
 
 listen:
 	minicom -b 115200 -o -D /dev/tty.usbmodem146102

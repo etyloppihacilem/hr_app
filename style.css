@@ -16,6 +16,15 @@ body {
     justify-content: space-between;
 }
 
+h2 {
+    color: #ef2e19;
+    background-color: #ff846b;
+    border: 1px #ef2e19 solid;
+    padding: 1em;
+    border-radius: 1em;
+
+}
+
 #batements {
     display: flex;
     flex-direction: column;

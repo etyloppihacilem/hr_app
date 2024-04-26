@@ -52,6 +52,7 @@
 #define SCRIPT_JS "/script.js"
 #define STYLE_CSS "/style.css"
 #define DATA "/data.json"
+#define TIME "/time.json"
 #include "script.js.h"
 #include "style.css.h"
 #include "index.html.h"
@@ -98,7 +99,7 @@ t_pulse *pulse_add(t_pulse **l, uint64_t ts) {
     if (!ret)
         return (0);
     ret->timestamp = ts;
-    ret->prev = *l;
+    ret->prev      = *l;
     if (*l)
         (*l)->next = *l;
     *l = ret;
@@ -179,15 +180,14 @@ static int test_server_content(const char *request, const char *params, char *re
             ;
         if (i >= RETRIES) {
             DEBUG_printf("MUTEX BLOCKED : aborting read\n");
-            len = snprintf(result, max_result_len, "{'error':'mutex'}");
+            len = snprintf(result, max_result_len, "{\"time\":%" PRIu64 ",\"data\":[]}", to_us_since_boot(get_absolute_time()));
         } else {
             start = local_storage.data;
             if (!start || start->timestamp <= last) {
                 mutex_exit(&local_storage.mtx);
-                len = snprintf(result, max_result_len, "[]");
+                len = snprintf(result, max_result_len, "{\"time\":%" PRIu64 ",\"data\":[]}", to_us_since_boot(get_absolute_time()));
             } else {
-                ft_strlcat(result, "[", max_result_len);
-                len++;
+                len += snprintf(result, max_result_len, "{\"time\":%" PRIu64 ",\"data\":[", to_us_since_boot(get_absolute_time()));
                 while (start && start->timestamp > last && len < max_result_len) {
                     if (start->prev && start->prev->timestamp > last)
                         len += snprintf(a, KEY_MAX_LEN, "%" PRIu64 ",", start->timestamp);
@@ -197,10 +197,12 @@ static int test_server_content(const char *request, const char *params, char *re
                     start = start->prev;
                 }
                 mutex_exit(&local_storage.mtx);
-                ft_strlcat(result, "]", max_result_len);
-                len++;
+                ft_strlcat(result, "]}", max_result_len);
+                len += 2;
             }
         }
+    } else if (strncmp(request, TIME, sizeof(TIME) - 1) == 0) {
+        len = snprintf(result, max_result_len, "[%" PRIu64 "]", to_us_since_boot(get_absolute_time()));
     } else if (strncmp(request, INDEX_HTML, sizeof(INDEX_HTML) - 1) == 0) {
         len = snprintf(result, max_result_len, index_html_h);
     } else if (strncmp(request, STYLE_CSS, sizeof(STYLE_CSS) - 1) == 0) {
@@ -334,7 +336,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
             }
             // Generate web page
             if (con_state->result_len > 0) {
-                if (strncmp(request, DATA, sizeof(DATA) - 1) == 0) {
+                if (strncmp(request, DATA, sizeof(DATA) - 1) == 0 || strncmp(request, TIME, sizeof(TIME) - 1) == 0) {
                     con_state->header_len = snprintf(con_state->headers,
                             sizeof(con_state->headers),
                             HTTP_RESPONSE_HEADERS_DATA,
